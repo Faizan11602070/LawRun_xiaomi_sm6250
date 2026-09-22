@@ -17,13 +17,9 @@ jobs:
 
       - name: Download and Extract Neutron Clang Toolchain
         run: |
-          # Neutron Clang is built for modern host systems and avoids the .relr.dyn incompatibility.
-          # This uses the AntMan manager to fetch a prebuilt toolchain.
           wget -q https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman -O antman
           chmod +x antman
           ./antman -S
-          # The toolchain is installed into a directory named 'neutron-clang'.
-          # Add its bin directory to the PATH for the build step.
           echo "$GITHUB_WORKSPACE/neutron-clang/bin" >> $GITHUB_PATH
 
       - name: Clone KernelSU (non-GKI)
@@ -33,13 +29,27 @@ jobs:
           cd KernelSU
           git checkout v0.9.5
 
-V
+      - name: Clone SUSFS Patches
+        run: |
+          rm -rf susfs4ksu
+          git config --global http.postBuffer 524288000
+          git config --global http.lowSpeedLimit 0
+          git config --global http.lowSpeedTime 999999
+          for i in 1 2 3 4 5; do
+            git clone --depth=1 --branch kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu && break
+            echo "Attempt $i failed, retrying..."
+            rm -rf susfs4ksu
+            sleep 5
+          done
+          test -d susfs4ksu || { echo "All clone attempts failed"; exit 1; }
+          cd susfs4ksu
+          git log --oneline -1
 
       - name: Apply KernelSU Patches
         run: |
           cd $GITHUB_WORKSPACE
           bash KernelSU/tools/init_kernelsu.sh $(pwd) || echo "KernelSU init script failed. Manual integration required."
-          
+
       - name: Apply SUSFS Patches
         run: |
           cd $GITHUB_WORKSPACE
@@ -54,17 +64,10 @@ V
 
       - name: Configure Kernel (Non-Interactive)
         run: |
-          # Enable necessary config options. Appending is a blunt approach but works for automation.
           echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-
-          # IMPORTANT: Set the missing CPU mask values to prevent the interactive prompt.
-          # These values are typical for an 8-core big.LITTLE configuration (4 LITTLE + 4 BIG).
-          # Adjust if your specific SoC requires different values.
           echo "CONFIG_LITTLE_CPU_MASK=0xF" >> arch/arm64/configs/vendor/atoll-perf_defconfig
           echo "CONFIG_BIG_CPU_MASK=0xF0" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-
-          # Run olddefconfig to resolve any remaining new symbols non-interactively.
           make O=out ARCH=arm64 vendor/atoll-perf_defconfig
           make O=out ARCH=arm64 olddefconfig
 
@@ -72,9 +75,7 @@ V
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          # Force host tools (like fixdep) to link with LLVM's lld, not GNU ld.
           export KBUILD_HOSTLDFLAGS="-fuse-ld=lld"
-          # Use LLVM=1 to tell the kernel to use Clang/LLVM for the target.
           make -j$(nproc --all) O=out ARCH=arm64 LLVM=1 KBUILD_HOSTLDFLAGS="-fuse-ld=lld"
 
       - name: Package with AnyKernel3
