@@ -62,14 +62,34 @@ jobs:
           cd ..
           patch -p1 < 50_add_susfs_in_kernel-4.14.patch || echo "KERNEL SUSFS PATCH FAILED"
 
-      - name: Configure Kernel (Non-Interactive)
+      - name: Prepare Defconfig (Remove Duplicates, Append Correctly)
         run: |
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-          echo "CONFIG_LITTLE_CPU_MASK=0xF" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-          echo "CONFIG_BIG_CPU_MASK=0xF0" >> arch/arm64/configs/vendor/atoll-perf_defconfig
+          DEFCONFIG=arch/arm64/configs/vendor/atoll-perf_defconfig
+          # Remove any pre-existing entries to avoid duplicate/conflicting values
+          sed -i '/CONFIG_LITTLE_CPU_MASK/d' $DEFCONFIG
+          sed -i '/CONFIG_BIG_CPU_MASK/d' $DEFCONFIG
+          sed -i '/CONFIG_KSU/d' $DEFCONFIG
+          # Append with quotes for string-type symbols (LITTLE/BIG_CPU_MASK)
+          echo 'CONFIG_KSU=y' >> $DEFCONFIG
+          echo 'CONFIG_KSU_SUSFS=y' >> $DEFCONFIG
+          echo 'CONFIG_LITTLE_CPU_MASK="0xF"' >> $DEFCONFIG
+          echo 'CONFIG_BIG_CPU_MASK="0xF0"' >> $DEFCONFIG
+
+      - name: Configure Kernel (Fully Non-Interactive)
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          # Step 1: Generate the .config from the defconfig
           make O=out ARCH=arm64 vendor/atoll-perf_defconfig
-          make O=out ARCH=arm64 olddefconfig
+          # Step 2: Force-set the string-type symbols via scripts/config as a safety net
+          ./scripts/config --file out/.config --set-str LITTLE_CPU_MASK 0xF
+          ./scripts/config --file out/.config --set-str BIG_CPU_MASK 0xF0
+          ./scripts/config --file out/.config --enable KSU
+          ./scripts/config --file out/.config --enable KSU_SUSFS
+          # Step 3: Finalize without prompting, feeding /dev/null to any remaining prompts
+          make O=out ARCH=arm64 olddefconfig </dev/null
+          # Step 4: Verify values are set
+          grep -E "LITTLE_CPU_MASK|BIG_CPU_MASK|CONFIG_KSU" out/.config || true
 
       - name: Build Kernel
         run: |
