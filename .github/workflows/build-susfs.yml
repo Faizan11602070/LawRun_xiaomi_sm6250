@@ -10,13 +10,21 @@ jobs:
       - name: Checkout LawRun Kernel Source
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential curl flex git gnupg gperf imagemagick lib32z1-dev liblz4-tool libncurses-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python3-pip
-          # Note: lib32ncurses5-dev → lib32ncurses-dev (or lib32ncurses6) on Ubuntu 24.04
-          # libncurses5-dev and libncurses5 → libncurses-dev
-          # lib32readline-dev may also be unavailable; if it fails, remove it or use lib32readline8
+
+      - name: Download and Extract Clang Toolchain
+        run: |
+          # Download a prebuilt Clang toolchain suitable for 4.14 kernels
+          # This uses the popular "proton-clang" toolchain, which is known to work well with many Android kernels.
+          wget -q https://github.com/kdrag0n/proton-clang/archive/refs/heads/master.zip -O proton-clang.zip
+          unzip -q proton-clang.zip
+          # The extracted folder is named proton-clang-master
+          mv proton-clang-master clang
+          # Prepend the Clang bin directory to the PATH
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
 
       - name: Clone KernelSU (non-GKI)
         run: |
@@ -35,53 +43,43 @@ jobs:
       - name: Apply KernelSU Patches
         run: |
           cd $GITHUB_WORKSPACE
-          # For non-GKI kernels, KernelSU integration is manual.
-          # The script below is a starting point but may not fully work.
-          # You will likely need to follow the official non-GKI guide:
-          # https://kernelsu.org/guide/how-to-integrate-for-non-gki.html
           bash KernelSU/tools/init_kernelsu.sh $(pwd) || echo "KernelSU init script failed. Manual integration required."
 
       - name: Apply SUSFS Patches
         run: |
           cd $GITHUB_WORKSPACE
-          # Copy files as per SUSFS instructions
           cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
           cp susfs4ksu/kernel_patches/50_add_susfs_in_kernel-4.14.patch ./
           cp -r susfs4ksu/kernel_patches/fs/* fs/
           cp -r susfs4ksu/kernel_patches/include/linux/* include/linux/
-          
-          # Apply patches. If they fail, the log will show which hunks failed.
-          # You will then need to manually edit the kernel source to resolve conflicts.
-          echo "Applying KernelSU SUSFS patch..."
           cd KernelSU
-          patch -p1 < 10_enable_susfs_for_ksu.patch || echo "KERNELSU SUSFS PATCH FAILED - SEE ABOVE FOR REJECTS"
+          patch -p1 < 10_enable_susfs_for_ksu.patch || echo "KERNELSU SUSFS PATCH FAILED"
           cd ..
-          
-          echo "Applying kernel SUSFS patch..."
-          patch -p1 < 50_add_susfs_in_kernel-4.14.patch || echo "KERNEL SUSFS PATCH FAILED - SEE ABOVE FOR REJECTS"
+          patch -p1 < 50_add_susfs_in_kernel-4.14.patch || echo "KERNEL SUSFS PATCH FAILED"
 
-      - name: Configure Kernel
+      - name: Configure Kernel (Non-Interactive)
         run: |
-          # Enable necessary config options. Appending to defconfig is a blunt approach.
-          # The proper way is to use menuconfig or edit the defconfig manually,
-          # but for automation, we append.
+          # Enable necessary config options. Appending is a blunt approach but works for automation.
           echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
           echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/atoll-perf_defconfig
-          # You may also need to enable specific SUSFS features like:
-          # CONFIG_KSU_SUSFS_SUS_PATH=y
-          # CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          # etc. Check KernelSU/kernel/Kconfig for options.
+
+          # IMPORTANT: Set the missing CPU mask values to prevent the interactive prompt.
+          # These values are typical for an 8-core big.LITTLE configuration (4 LITTLE + 4 BIG).
+          # Adjust if your specific SoC requires different values.
+          echo "CONFIG_LITTLE_CPU_MASK=0xF" >> arch/arm64/configs/vendor/atoll-perf_defconfig
+          echo "CONFIG_BIG_CPU_MASK=0xF0" >> arch/arm64/configs/vendor/atoll-perf_defconfig
+
+          # Run olddefconfig to resolve any remaining new symbols non-interactively.
+          make O=out ARCH=arm64 vendor/atoll-perf_defconfig
+          make O=out ARCH=arm64 olddefconfig
 
       - name: Build Kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          # Use the toolchain that LawRun expects. Android kernels often use Clang.
-          # This may need adjustment. For simplicity, we use the system cross-compiler.
-          # If the build fails, check LawRun's documentation for the correct toolchain.
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          make O=out ARCH=arm64 vendor/atoll-perf_defconfig
-          make -j$(nproc --all) O=out ARCH=arm64
+          # Use LLVM=1 to tell the kernel build system to use Clang/LLVM.
+          # The PATH already contains the Clang we downloaded.
+          make -j$(nproc --all) O=out ARCH=arm64 LLVM=1
 
       - name: Package with AnyKernel3
         run: |
