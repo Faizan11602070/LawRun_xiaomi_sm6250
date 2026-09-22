@@ -33,18 +33,13 @@ jobs:
           cd KernelSU
           git checkout v0.9.5
 
-      - name: Clone SUSFS Patches
-        run: |
-          rm -rf susfs4ksu
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-          cd susfs4ksu
-          git checkout kernel-4.14
+V
 
       - name: Apply KernelSU Patches
         run: |
           cd $GITHUB_WORKSPACE
           bash KernelSU/tools/init_kernelsu.sh $(pwd) || echo "KernelSU init script failed. Manual integration required."
-
+          
       - name: Apply SUSFS Patches
         run: |
           cd $GITHUB_WORKSPACE
